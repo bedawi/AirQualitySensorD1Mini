@@ -1,3 +1,5 @@
+#include <cstdint>      // Only needed when using PlatformIO on VSCode
+
 /* ----------------- General config -------------------------------- */
 /* WiFi */
 const char* ssid                  = "YOUR SSID";     // Your WiFi SSID
