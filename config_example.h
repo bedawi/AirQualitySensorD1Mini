@@ -1,3 +1,5 @@
+// Rename this file into config.h and add it in .gitignore to make sure your credentials are not 
+// accidentally leaked to Github
 #include <cstdint>      // Only needed when using PlatformIO on VSCode
 
 /* ----------------- General config -------------------------------- */
