@@ -1,5 +1,6 @@
-// Rename this file into config.h and add it in .gitignore to make sure your credentials are not 
-// accidentally leaked to Github
+// Duplicate this file into config.h and add it to .gitignore to make sure your credentials are not 
+// accidentally leaked to Github!
+
 #include <cstdint>      // Only needed when using PlatformIO on VSCode
 
 /* ----------------- General config -------------------------------- */
@@ -18,6 +19,9 @@ const char* status_topic          = "events";        // MQTT topic to report sta
 /* Particulate Matter Sensor */
 uint32_t    g_pms_warmup_period   =  30;             // Seconds to warm up PMS before reading
 uint32_t    g_pms_report_period   = 120;             // Seconds between reports
+
+/* BME/BMP280 environment Sensor */
+uint32_t    g_bmp_report_period   =  60;
 
 /* Serial */
 #define     SERIAL_BAUD_RATE    115200               // Speed for USB serial console

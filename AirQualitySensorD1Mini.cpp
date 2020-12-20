@@ -13,6 +13,13 @@
      When using PlatformIO on Visual Studio Code, also add:
      "Adafruit BusIO" by Adafruit
 
+     For BME/BMP280 Sensor
+     "Adafruit Unified Sensor" by Adafruit
+     "Adafruit BME280 Library" by Adafruit
+
+     For CCS811-Sensor
+     "Adafruit CCS811 Library"  by Adafruit
+
   Bundled dependencies. No need to install separately:
      "PMS Library" by Mariusz Kacki, forked by SwapBap
 
@@ -21,90 +28,193 @@
 
   Inspired by https://github.com/SwapBap/WemosDustSensor/
 
+  Extended by Benjamin Dahlhoff to support BME/BMP280 and more sensors
+    https://github.com/bedawi
+
   Copyright 2020 SuperHouse Automation Pty Ltd www.superhouse.tv
 */
-#define VERSION "2.5"
+#define VERSION "2.5.1 (bedawi)"
 /*--------------------------- Configuration ------------------------------*/
 // Configuration should be done in the included file:
 #include "config.h"
 
 /*--------------------------- Libraries ----------------------------------*/
-#include <Arduino.h>                  // Only needed when using PlatformIO on VSCode
-#include <Wire.h>                     // For I2C
-#include <SoftwareSerial.h>           // Allows PMS to avoid the USB serial port
-#include <Adafruit_GFX.h>             // For OLED
-#include <Adafruit_SSD1306.h>         // For OLED
-#include <ESP8266WiFi.h>              // ESP8266 WiFi driver
-#include <PubSubClient.h>             // Required for MQTT
-#include "PMS.h"                      // Particulate Matter Sensor driver (embedded)
+#include <Arduino.h>          // Only needed when using PlatformIO on VSCode
+#include <Wire.h>             // For I2C
+#include <SoftwareSerial.h>   // Allows PMS to avoid the USB serial port
+#include <Adafruit_GFX.h>     // For OLED
+#include <Adafruit_SSD1306.h> // For OLED
+#include <ESP8266WiFi.h>      // ESP8266 WiFi driver
+#include <PubSubClient.h>     // Required for MQTT
+#include "PMS.h"              // Particulate Matter Sensor driver (embedded)
+#include <Adafruit_Sensor.h>  // Pressure, Temperature, and Humidity
+#include <Adafruit_BME280.h>  // Pressure, Temperature, and Humidity Sensor BME/BMP280 connected to i2c-Bus
+//#include "Adafruit_CCS811.h"  // Alcohol, aldehydes, ketones, organic acids, amines, aliphatic and aromatic hydrocarbons
 
+/*--------------------------- Classes ------------------------------------*/
+// This class provides timer functions for sensors. 
+class SensorTimer
+{
+  int repeat_time;
+  int warmup_time;
+  uint32_t init_time;
+  uint32_t waking_up_since;
+  bool readings;
+
+public:
+  SensorTimer()
+  {
+    repeat_time = 120000;
+    warmup_time = 60000;
+    startover();
+    readings = false;
+  }
+  // Methods
+  void startover()
+  {
+    init_time = millis();
+    waking_up_since = 0;
+  }
+
+  bool isReady()
+  {
+    if (millis() >= (init_time + repeat_time))
+    {
+      if (millis() >= (waking_up_since + warmup_time))
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool isTimetoWakeup()
+  {
+    if (waking_up_since != 0)
+    {
+      return false;
+    }
+    if (millis() >= (init_time + repeat_time - warmup_time))
+    {
+      return true;
+    }
+    else
+    {
+      return false;
+    }
+  }
+
+  void setRepeatTime(int seconds)
+  {
+    repeat_time = seconds * 1000;
+  }
+
+  void setWarmupTime(int seconds)
+  {
+    warmup_time = seconds * 1000;
+  }
+
+  void skipWaiting()
+  {
+    init_time = millis() - repeat_time + warmup_time; // Changes the init-time so first measurement starts earlier.
+  }
+
+  void wakeUp()
+  {
+    waking_up_since = millis();
+  }
+
+  void readingsTaken()
+  {
+    readings = true;
+  }
+
+  bool readingsWaiting()
+  {
+    return readings;
+  }
+
+  void readingsReported()
+  {
+    readings = false;
+  }
+};
 
 /*--------------------------- Global Variables ---------------------------*/
 // Particulate matter sensor
-#define   PMS_STATE_ASLEEP        0   // Low power mode, laser and fan off
-#define   PMS_STATE_WAKING_UP     1   // Laser and fan on, not ready yet
-#define   PMS_STATE_READY         2   // Warmed up, ready to give data
-uint8_t   g_pms_state           = PMS_STATE_WAKING_UP;
-uint32_t  g_pms_state_start     = 0;  // Timestamp when PMS state last changed
-uint8_t   g_pms_ae_readings_taken  = false;  // true/false: whether any readings have been taken
-uint8_t   g_pms_ppd_readings_taken = false;  // true/false: whether PPD readings have been taken
+uint16_t g_pm1p0_sp_value = 0;  // Standard Particle calibration pm1.0 reading
+uint16_t g_pm2p5_sp_value = 0;  // Standard Particle calibration pm2.5 reading
+uint16_t g_pm10p0_sp_value = 0; // Standard Particle calibration pm10.0 reading
 
-uint16_t  g_pm1p0_sp_value      = 0;  // Standard Particle calibration pm1.0 reading
-uint16_t  g_pm2p5_sp_value      = 0;  // Standard Particle calibration pm2.5 reading
-uint16_t  g_pm10p0_sp_value     = 0;  // Standard Particle calibration pm10.0 reading
+uint16_t g_pm1p0_ae_value = 0;  // Atmospheric Environment pm1.0 reading
+uint16_t g_pm2p5_ae_value = 0;  // Atmospheric Environment pm2.5 reading
+uint16_t g_pm10p0_ae_value = 0; // Atmospheric Environment pm10.0 reading
 
-uint16_t  g_pm1p0_ae_value      = 0;  // Atmospheric Environment pm1.0 reading
-uint16_t  g_pm2p5_ae_value      = 0;  // Atmospheric Environment pm2.5 reading
-uint16_t  g_pm10p0_ae_value     = 0;  // Atmospheric Environment pm10.0 reading
+uint32_t g_pm0p3_ppd_value = 0;  // Particles Per Deciliter pm0.3 reading
+uint32_t g_pm0p5_ppd_value = 0;  // Particles Per Deciliter pm0.5 reading
+uint32_t g_pm1p0_ppd_value = 0;  // Particles Per Deciliter pm1.0 reading
+uint32_t g_pm2p5_ppd_value = 0;  // Particles Per Deciliter pm2.5 reading
+uint32_t g_pm5p0_ppd_value = 0;  // Particles Per Deciliter pm5.0 reading
+uint32_t g_pm10p0_ppd_value = 0; // Particles Per Deciliter pm10.0 reading
 
-uint32_t  g_pm0p3_ppd_value     = 0;  // Particles Per Deciliter pm0.3 reading
-uint32_t  g_pm0p5_ppd_value     = 0;  // Particles Per Deciliter pm0.5 reading
-uint32_t  g_pm1p0_ppd_value     = 0;  // Particles Per Deciliter pm1.0 reading
-uint32_t  g_pm2p5_ppd_value     = 0;  // Particles Per Deciliter pm2.5 reading
-uint32_t  g_pm5p0_ppd_value     = 0;  // Particles Per Deciliter pm5.0 reading
-uint32_t  g_pm10p0_ppd_value    = 0;  // Particles Per Deciliter pm10.0 reading
+// BME/BMP280 sensor
+float_t g_temperature_celsius_value = 0; // Temperature reading
+float_t g_humidity_percent_value = 0; // Humidity reading
+float_t g_pressure_hpa_value = 0; // Air pressure reading
+float_t g_altitude_meter_value = 0; // Altimeter reading
 
 // MQTT
-char g_mqtt_message_buffer[255];      // General purpose buffer for MQTT messages
-char g_command_topic[50];             // MQTT topic for receiving commands
+char g_mqtt_message_buffer[255]; // General purpose buffer for MQTT messages
+char g_command_topic[50];        // MQTT topic for receiving commands
 
 #if REPORT_MQTT_SEPARATE
-char g_pm1p0_ae_mqtt_topic[50];       // MQTT topic for reporting pm1.0 AE value
-char g_pm2p5_ae_mqtt_topic[50];       // MQTT topic for reporting pm2.5 AE value
-char g_pm10p0_ae_mqtt_topic[50];      // MQTT topic for reporting pm10.0 AE value
-char g_pm0p3_ppd_mqtt_topic[50];      // MQTT topic for reporting pm0.3 PPD value
-char g_pm0p5_ppd_mqtt_topic[50];      // MQTT topic for reporting pm0.5 PPD value
-char g_pm1p0_ppd_mqtt_topic[50];      // MQTT topic for reporting pm1.0 PPD value
-char g_pm2p5_ppd_mqtt_topic[50];      // MQTT topic for reporting pm2.5 PPD value
-char g_pm5p0_ppd_mqtt_topic[50];      // MQTT topic for reporting pm5.0 PPD value
-char g_pm10p0_ppd_mqtt_topic[50];     // MQTT topic for reporting pm10.0 PPD value
+char g_pm1p0_ae_mqtt_topic[50];   // MQTT topic for reporting pm1.0 AE value
+char g_pm2p5_ae_mqtt_topic[50];   // MQTT topic for reporting pm2.5 AE value
+char g_pm10p0_ae_mqtt_topic[50];  // MQTT topic for reporting pm10.0 AE value
+char g_pm0p3_ppd_mqtt_topic[50];  // MQTT topic for reporting pm0.3 PPD value
+char g_pm0p5_ppd_mqtt_topic[50];  // MQTT topic for reporting pm0.5 PPD value
+char g_pm1p0_ppd_mqtt_topic[50];  // MQTT topic for reporting pm1.0 PPD value
+char g_pm2p5_ppd_mqtt_topic[50];  // MQTT topic for reporting pm2.5 PPD value
+char g_pm5p0_ppd_mqtt_topic[50];  // MQTT topic for reporting pm5.0 PPD value
+char g_pm10p0_ppd_mqtt_topic[50]; // MQTT topic for reporting pm10.0 PPD value
+char g_humidity_percent_mqtt_topic[50];
+char g_pressure_hpa_mqtt_topic[50];
+char g_temperature_celsius_mqtt_topic[50];
+char g_altitude_meter_mqtt_topic[50];
 #endif
 #if REPORT_MQTT_JSON
-char g_mqtt_json_topic[50];           // MQTT topic for reporting all values using JSON
+char g_mqtt_json_topic[50]; // MQTT topic for reporting all values using JSON
 #endif
 
+// Weather Sensor (BME/BMP280)
+#define SEALEVELPRESSURE_HPA (1013.25)
+Adafruit_BME280 bme;
+
+// Gas Sensor (CCS811)
+//Adafruit_CCS811 ccs;
+
 // OLED Display
-#define DISPLAY_STATE_GRAMS   1       // Display values in micrograms/m^3 on screen
-#define DISPLAY_STATE_PPD     2       // Display values in parts per deciliter on screen
-#define DISPLAY_STATE_INFO    3       // Display network status on screen
-#define NUM_OF_STATES 3               // Number of possible states
-uint8_t g_display_state = DISPLAY_STATE_GRAMS;  // Display values in micrograms/m^3 by default
+#define DISPLAY_STATE_GRAMS 1                  // Display values in micrograms/m^3 on screen
+#define DISPLAY_STATE_PPD 2                    // Display values in parts per deciliter on screen
+#define DISPLAY_STATE_INFO 3                   // Display network status on screen
+#define NUM_OF_STATES 3                        // Number of possible states
+uint8_t g_display_state = DISPLAY_STATE_GRAMS; // Display values in micrograms/m^3 by default
 
 // Mode Button
-uint8_t  g_current_mode_button_state  =  1;  // Pin is pulled high by default
-uint8_t  g_previous_mode_button_state =  1;
-uint32_t g_last_debounce_time         =  0;
-uint32_t g_debounce_delay             = 100;
+uint8_t g_current_mode_button_state = 1; // Pin is pulled high by default
+uint8_t g_previous_mode_button_state = 1;
+uint32_t g_last_debounce_time = 0;
+uint32_t g_debounce_delay = 100;
 
 // Wifi
-#define WIFI_CONNECT_INTERVAL           500  // Wait 500ms intervals for wifi connection
-#define WIFI_CONNECT_MAX_ATTEMPTS        10  // Number of attempts/intervals to wait
+#define WIFI_CONNECT_INTERVAL 500    // Wait 500ms intervals for wifi connection
+#define WIFI_CONNECT_MAX_ATTEMPTS 10 // Number of attempts/intervals to wait
 
 // General
-uint32_t g_device_id;                    // Unique ID from ESP chip ID
+uint32_t g_device_id; // Unique ID from ESP chip ID
 
 /*--------------------------- Function Signatures ------------------------*/
-void mqttCallback(char* topic, byte* payload, uint8_t length);
+void mqttCallback(char *topic, byte *payload, uint8_t length);
 void checkModeButton();
 bool initWifi();
 void reconnectMqtt();
@@ -112,14 +222,19 @@ void updatePmsReadings();
 void reportToMqtt();
 void renderScreen();
 void reportToSerial();
+void updateBMP280Readings();
 
 /*--------------------------- Instantiate Global Objects -----------------*/
 // Software serial port
 SoftwareSerial pmsSerial(PMS_RX_PIN, PMS_TX_PIN); // Rx pin = GPIO2 (D4 on Wemos D1 Mini)
 
 // Particulate matter sensor
-PMS pms(pmsSerial);                      // Use the software serial port for the PMS
+PMS pms(pmsSerial); // Use the software serial port for the PMS
 PMS::DATA g_data;
+SensorTimer pmstimer; // Each sensor can have its own timer
+
+// BME/BMP280 sensor
+SensorTimer bmetimer;
 
 // OLED
 Adafruit_SSD1306 OLED(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -134,21 +249,62 @@ PubSubClient client(esp_client);
 */
 void setup()
 {
-  Serial.begin(SERIAL_BAUD_RATE);   // GPIO1, GPIO3 (TX/RX pin on ESP-12E Development Board)
-  Serial.println();
-  Serial.print("Air Quality Sensor starting up, v");
+  delay(1000); // Short wait - helps debugging on serial console.
+
+  Serial.begin(SERIAL_BAUD_RATE); // GPIO1, GPIO3 (TX/RX pin on ESP-12E Development Board)
+  Serial.print("\nAir Quality Sensor starting up, v");
   Serial.println(VERSION);
 
+  //SensorTimer *s1= new SensorTimer();
+  //delete s1;
+  pmstimer.setRepeatTime(g_pms_report_period);
+  pmstimer.setWarmupTime(g_pms_warmup_period);
+  pmstimer.skipWaiting();
+
   // Open a connection to the PMS and put it into passive mode
-  pmsSerial.begin(PMS_BAUD_RATE);   // Connection for PMS5003
-  pms.passiveMode();                // Tell PMS to stop sending data automatically
+  pmsSerial.begin(PMS_BAUD_RATE); // Connection for PMS5003
+  pms.passiveMode();              // Tell PMS to stop sending data automatically
   delay(100);
-  pms.wakeUp();                     // Tell PMS to wake up (turn on fan and laser)
+  pms.sleep(); // Sending PMS to sleep for now
 
   // We need a unique device ID for our MQTT client connection
-  g_device_id = ESP.getChipId();  // Get the unique ID of the ESP8266 chip
+  g_device_id = ESP.getChipId(); // Get the unique ID of the ESP8266 chip
   Serial.print("Device ID: ");
   Serial.println(g_device_id, HEX);
+
+  // Check BME-Sensor
+  bmetimer.setRepeatTime(g_bmp_report_period);
+  bmetimer.setWarmupTime(0);
+  bmetimer.skipWaiting();
+  bool status = bme.begin(0x76, &Wire);
+  if (!status)
+  {
+    Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
+  }
+  else
+  {
+    // Setting up BME-Sensor
+    Serial.println("BME/BMP280 sensor is online");
+    Serial.println();
+    Serial.println("-- Weather Station Scenario --");
+    Serial.println("forced mode, 1x temperature / 1x humidity / 1x pressure oversampling,");
+    Serial.println("filter off");
+    bme.setSampling(Adafruit_BME280::MODE_FORCED,
+                    Adafruit_BME280::SAMPLING_X1, // temperature
+                    Adafruit_BME280::SAMPLING_X1, // pressure
+                    Adafruit_BME280::SAMPLING_X1, // humidity
+                    Adafruit_BME280::FILTER_OFF);
+  }
+
+  // Bring CCS811 Sensor Online
+  /* if (ccs.begin())
+  {
+    Serial.println("CCS811 gas sensor is online");
+  }
+  else
+  {
+    Serial.println("Failed to start CCS811 gas sensor");
+  } */
 
   // Set up display
   OLED.begin();
@@ -159,45 +315,57 @@ void setup()
   OLED.setCursor(0, 0);
   OLED.println("www.superhouse.tv/aqs");
   OLED.println(" Particulate Matter");
-  OLED.print(" Sensor v"); OLED.println(VERSION);
-  OLED.print  (" Device id: ");
+  OLED.print(" Sensor v");
+  OLED.println(VERSION);
+  OLED.print(" Device id: ");
   OLED.println(g_device_id, HEX);
   OLED.display();
 
   // Set up the topics for publishing sensor readings. By inserting the unique ID,
   // the result is of the form: "tele/d9616f/AE1P0" etc
-  sprintf(g_command_topic,         "cmnd/%x/COMMAND",   ESP.getChipId());  // For receiving commands
+  sprintf(g_command_topic, "cmnd/%x/COMMAND", ESP.getChipId()); // For receiving commands
 #if REPORT_MQTT_SEPARATE
-  sprintf(g_pm1p0_ae_mqtt_topic,   "tele/%x/AE1P0",     ESP.getChipId());  // Data from PMS
-  sprintf(g_pm2p5_ae_mqtt_topic,   "tele/%x/AE2P5",     ESP.getChipId());  // Data from PMS
-  sprintf(g_pm10p0_ae_mqtt_topic,  "tele/%x/AE10P0",    ESP.getChipId());  // Data from PMS
-  sprintf(g_pm0p3_ppd_mqtt_topic,  "tele/%x/PPD0P3",    ESP.getChipId());  // Data from PMS
-  sprintf(g_pm0p5_ppd_mqtt_topic,  "tele/%x/PPD0P5",    ESP.getChipId());  // Data from PMS
-  sprintf(g_pm1p0_ppd_mqtt_topic,  "tele/%x/PPD1P0",    ESP.getChipId());  // Data from PMS
-  sprintf(g_pm2p5_ppd_mqtt_topic,  "tele/%x/PPD2P5",    ESP.getChipId());  // Data from PMS
-  sprintf(g_pm5p0_ppd_mqtt_topic,  "tele/%x/PPD5P0",    ESP.getChipId());  // Data from PMS
-  sprintf(g_pm10p0_ppd_mqtt_topic, "tele/%x/PPD10P0",   ESP.getChipId());  // Data from PMS
+  sprintf(g_pm1p0_ae_mqtt_topic, "tele/%x/AE1P0", ESP.getChipId());     // Data from PMS
+  sprintf(g_pm2p5_ae_mqtt_topic, "tele/%x/AE2P5", ESP.getChipId());     // Data from PMS
+  sprintf(g_pm10p0_ae_mqtt_topic, "tele/%x/AE10P0", ESP.getChipId());   // Data from PMS
+  sprintf(g_pm0p3_ppd_mqtt_topic, "tele/%x/PPD0P3", ESP.getChipId());   // Data from PMS
+  sprintf(g_pm0p5_ppd_mqtt_topic, "tele/%x/PPD0P5", ESP.getChipId());   // Data from PMS
+  sprintf(g_pm1p0_ppd_mqtt_topic, "tele/%x/PPD1P0", ESP.getChipId());   // Data from PMS
+  sprintf(g_pm2p5_ppd_mqtt_topic, "tele/%x/PPD2P5", ESP.getChipId());   // Data from PMS
+  sprintf(g_pm5p0_ppd_mqtt_topic, "tele/%x/PPD5P0", ESP.getChipId());   // Data from PMS
+  sprintf(g_pm10p0_ppd_mqtt_topic, "tele/%x/PPD10P0", ESP.getChipId()); // Data from PMS
+
+  // Data from BME/BMP280
+  sprintf(g_humidity_percent_mqtt_topic, "tele/%x/humidity", ESP.getChipId());
+  sprintf(g_pressure_hpa_mqtt_topic, "tele/%x/pressure", ESP.getChipId());
+  sprintf(g_temperature_celsius_mqtt_topic, "tele/%x/temperature", ESP.getChipId());
+  sprintf(g_altitude_meter_mqtt_topic, "tele/%x/altitude", ESP.getChipId());
 #endif
 #if REPORT_MQTT_JSON
-  sprintf(g_mqtt_json_topic,       "tele/%x/SENSOR",    ESP.getChipId());  // Data from PMS
+  sprintf(g_mqtt_json_topic, "tele/%x/SENSOR", ESP.getChipId()); // Data from PMS
 #endif
 
   // Report the MQTT topics to the serial console
-  Serial.println(g_command_topic);          // For receiving messages
+  Serial.println(g_command_topic); // For receiving messages
 #if REPORT_MQTT_SEPARATE
   Serial.println("MQTT topics:");
-  Serial.println(g_pm1p0_ae_mqtt_topic);    // From PMS
-  Serial.println(g_pm2p5_ae_mqtt_topic);    // From PMS
-  Serial.println(g_pm10p0_ae_mqtt_topic);   // From PMS
-  Serial.println(g_pm0p3_ppd_mqtt_topic);   // From PMS
-  Serial.println(g_pm0p5_ppd_mqtt_topic);   // From PMS
-  Serial.println(g_pm1p0_ppd_mqtt_topic);   // From PMS
-  Serial.println(g_pm2p5_ppd_mqtt_topic);   // From PMS
-  Serial.println(g_pm5p0_ppd_mqtt_topic);   // From PMS
-  Serial.println(g_pm10p0_ppd_mqtt_topic);  // From PMS
+  Serial.println(g_pm1p0_ae_mqtt_topic);   // From PMS
+  Serial.println(g_pm2p5_ae_mqtt_topic);   // From PMS
+  Serial.println(g_pm10p0_ae_mqtt_topic);  // From PMS
+  Serial.println(g_pm0p3_ppd_mqtt_topic);  // From PMS
+  Serial.println(g_pm0p5_ppd_mqtt_topic);  // From PMS
+  Serial.println(g_pm1p0_ppd_mqtt_topic);  // From PMS
+  Serial.println(g_pm2p5_ppd_mqtt_topic);  // From PMS
+  Serial.println(g_pm5p0_ppd_mqtt_topic);  // From PMS
+  Serial.println(g_pm10p0_ppd_mqtt_topic); // From PMS
+  // From BME/BMP280
+  Serial.println(g_humidity_percent_mqtt_topic);
+  Serial.println(g_pressure_hpa_mqtt_topic);
+  Serial.println(g_temperature_celsius_mqtt_topic);
+  Serial.println(g_altitude_meter_mqtt_topic);
 #endif
 #if REPORT_MQTT_JSON
-  Serial.println(g_mqtt_json_topic);        // From PMS
+  Serial.println(g_mqtt_json_topic); // From PMS
 #endif
 
   // Connect to WiFi
@@ -206,7 +374,9 @@ void setup()
   {
     OLED.println("WiFi [CONNECTED]");
     Serial.println("WiFi connected");
-  } else {
+  }
+  else
+  {
     OLED.println("WiFi [FAILED]");
     Serial.println("WiFi FAILED");
   }
@@ -233,11 +403,12 @@ void loop()
       reconnectMqtt();
     }
   }
-  client.loop();  // Process any outstanding MQTT messages
+  client.loop(); // Process any outstanding MQTT messages
 
   checkModeButton();
   updatePmsReadings();
-  renderScreen();
+  updateBMP280Readings();
+  // renderScreen(); Only render when needed
 }
 
 /**
@@ -263,7 +434,9 @@ void checkModeButton()
     {
       g_display_state = 1;
       return;
-    } else {
+    }
+    else
+    {
       g_display_state++;
       return;
     }
@@ -273,77 +446,87 @@ void checkModeButton()
 }
 
 /**
+ * Update environment reading vom BME/BMP280
+*/
+
+void updateBMP280Readings()
+{
+  if (bmetimer.isTimetoWakeup())
+  {
+    // Nothing to do here, sensor does not need to wake up.
+    bmetimer.wakeUp();
+  }
+
+  if (bmetimer.isReady())
+  {
+    bme.takeForcedMeasurement();
+
+    // Temperature
+    g_temperature_celsius_value = bme.readTemperature();
+    // Pressure
+    g_pressure_hpa_value = bme.readPressure() / 100.0F;
+    // Sealevel (approximation)
+    g_altitude_meter_value = bme.readAltitude(SEALEVELPRESSURE_HPA);
+    // Humidity
+    g_humidity_percent_value = bme.readHumidity();
+
+    bmetimer.readingsTaken();
+    reportToMqtt();
+    reportToSerial();
+    renderScreen();
+    bmetimer.readingsReported();
+    bmetimer.startover();
+  }
+}
+
+/**
   Update particulate matter sensor values
 */
 void updatePmsReadings()
 {
-  uint32_t time_now = millis();
-
   // Check if we've been in the sleep state for long enough
-  if (PMS_STATE_ASLEEP == g_pms_state)
+  if (pmstimer.isTimetoWakeup())
   {
-    if (time_now - g_pms_state_start
-        >= ((g_pms_report_period * 1000) - (g_pms_warmup_period * 1000)))
-    {
-      // It's time to wake up the sensor
-      //Serial.println("Waking up sensor");
-      pms.wakeUp();
-      g_pms_state_start = time_now;
-      g_pms_state = PMS_STATE_WAKING_UP;
-    }
+    Serial.println("Waking up PMS sensor");
+    pms.wakeUp();
+    pmstimer.wakeUp();
   }
 
-  // Check if we've been in the waking up state for long enough
-  if (PMS_STATE_WAKING_UP == g_pms_state)
+  if (pmstimer.isReady())
   {
-    if (time_now - g_pms_state_start
-        >= (g_pms_warmup_period * 1000))
-    {
-      g_pms_state_start = time_now;
-      g_pms_state = PMS_STATE_READY;
-    }
-  }
-
-  // Put the most recent values into globals for reference elsewhere
-  if (PMS_STATE_READY == g_pms_state)
-  {
+    Serial.println("PMS sensor is ready. Reading...");
     //pms.requestRead();
-    if (pms.readUntil(g_data))  // Use a blocking road to make sure we get values
+    if (pms.readUntil(g_data)) // Use a blocking road to make sure we get values
     {
-      g_pm1p0_sp_value   = g_data.PM_SP_UG_1_0;
-      g_pm2p5_sp_value   = g_data.PM_SP_UG_2_5;
-      g_pm10p0_sp_value  = g_data.PM_SP_UG_10_0;
+      g_pm1p0_sp_value = g_data.PM_SP_UG_1_0;
+      g_pm2p5_sp_value = g_data.PM_SP_UG_2_5;
+      g_pm10p0_sp_value = g_data.PM_SP_UG_10_0;
 
-      g_pm1p0_ae_value   = g_data.PM_AE_UG_1_0;
-      g_pm2p5_ae_value   = g_data.PM_AE_UG_2_5;
-      g_pm10p0_ae_value  = g_data.PM_AE_UG_10_0;
-
-      g_pms_ae_readings_taken = true;
+      g_pm1p0_ae_value = g_data.PM_AE_UG_1_0;
+      g_pm2p5_ae_value = g_data.PM_AE_UG_2_5;
+      g_pm10p0_ae_value = g_data.PM_AE_UG_10_0;
 
       // This condition below should NOT be required, but currently I get all
       // 0 values for the PPD results every second time. This check only updates
       // the global values if there is a non-zero result for any of the values:
-      if (g_data.PM_TOTALPARTICLES_0_3 + g_data.PM_TOTALPARTICLES_0_5
-          + g_data.PM_TOTALPARTICLES_1_0 + g_data.PM_TOTALPARTICLES_2_5
-          + g_data.PM_TOTALPARTICLES_5_0 + g_data.PM_TOTALPARTICLES_10_0
-          != 0)
+      if (g_data.PM_TOTALPARTICLES_0_3 + g_data.PM_TOTALPARTICLES_0_5 + g_data.PM_TOTALPARTICLES_1_0 + g_data.PM_TOTALPARTICLES_2_5 + g_data.PM_TOTALPARTICLES_5_0 + g_data.PM_TOTALPARTICLES_10_0 != 0)
       {
-        g_pm0p3_ppd_value  = g_data.PM_TOTALPARTICLES_0_3;
-        g_pm0p5_ppd_value  = g_data.PM_TOTALPARTICLES_0_5;
-        g_pm1p0_ppd_value  = g_data.PM_TOTALPARTICLES_1_0;
-        g_pm2p5_ppd_value  = g_data.PM_TOTALPARTICLES_2_5;
-        g_pm5p0_ppd_value  = g_data.PM_TOTALPARTICLES_5_0;
+        g_pm0p3_ppd_value = g_data.PM_TOTALPARTICLES_0_3;
+        g_pm0p5_ppd_value = g_data.PM_TOTALPARTICLES_0_5;
+        g_pm1p0_ppd_value = g_data.PM_TOTALPARTICLES_1_0;
+        g_pm2p5_ppd_value = g_data.PM_TOTALPARTICLES_2_5;
+        g_pm5p0_ppd_value = g_data.PM_TOTALPARTICLES_5_0;
         g_pm10p0_ppd_value = g_data.PM_TOTALPARTICLES_10_0;
-        g_pms_ppd_readings_taken = true;
+        pms.sleep();
+        pmstimer.startover();
+        pmstimer.readingsTaken();
       }
-      pms.sleep();
 
       // Report the new values
       reportToMqtt();
       reportToSerial();
-
-      g_pms_state_start = time_now;
-      g_pms_state = PMS_STATE_ASLEEP;
+      renderScreen();
+      pmstimer.readingsReported();
     }
   }
 }
@@ -359,87 +542,93 @@ void renderScreen()
   // Render our displays
   switch (g_display_state)
   {
-    case DISPLAY_STATE_GRAMS:
-      OLED.setTextWrap(false);
+  case DISPLAY_STATE_GRAMS:
+    OLED.setTextWrap(false);
 
-      if (true == g_pms_ae_readings_taken)
-      {
-        OLED.println("  Particles ug/m^3");
+    if (pmstimer.readingsWaiting())
+    {
+      OLED.println("  Particles ug/m^3");
 
-        OLED.print("     PM  1.0: ");
-        OLED.println(g_pm1p0_ae_value);
+      OLED.print("     PM  1.0: ");
+      OLED.println(g_pm1p0_ae_value);
 
-        OLED.print("     PM  2.5: ");
-        OLED.println(g_pm2p5_ae_value);
+      OLED.print("     PM  2.5: ");
+      OLED.println(g_pm2p5_ae_value);
 
-        OLED.print("     PM 10.0: ");
-        OLED.println(g_pm10p0_ae_value);
-      } else {
-        OLED.println("  Particles ug/m^3");
-        OLED.println("  ----------------");
-        OLED.println(" Preparing sensor and");
-        OLED.println("   waiting for data");
-      }
-      break;
+      OLED.print("     PM 10.0: ");
+      OLED.println(g_pm10p0_ae_value);
+    }
+    else
+    {
+      OLED.println("  Particles ug/m^3");
+      OLED.println("  ----------------");
+      OLED.println(" Preparing sensor and");
+      OLED.println("   waiting for data");
+    }
+    break;
 
-    case DISPLAY_STATE_PPD:
-      OLED.setTextWrap(false);
+  case DISPLAY_STATE_PPD:
+    OLED.setTextWrap(false);
 
-      if (true == g_pms_ppd_readings_taken)
-      {
-        OLED.println("Particles / Deciliter");
+    if (pmstimer.readingsWaiting())
+    {
+      OLED.println("Particles / Deciliter");
 
-        OLED.print(" 0.3: ");
-        OLED.print(g_pm0p3_ppd_value);
-        OLED.setCursor(64, 8);
-        OLED.print("0.5:  ");
-        OLED.println(g_pm0p5_ppd_value);
+      OLED.print(" 0.3: ");
+      OLED.print(g_pm0p3_ppd_value);
+      OLED.setCursor(64, 8);
+      OLED.print("0.5:  ");
+      OLED.println(g_pm0p5_ppd_value);
 
-        OLED.print(" 1.0: ");
-        OLED.print(g_pm1p0_ppd_value);
-        OLED.setCursor(64, 16);
-        OLED.print("2.5:  ");
-        OLED.println(g_pm2p5_ppd_value);
+      OLED.print(" 1.0: ");
+      OLED.print(g_pm1p0_ppd_value);
+      OLED.setCursor(64, 16);
+      OLED.print("2.5:  ");
+      OLED.println(g_pm2p5_ppd_value);
 
-        OLED.print(" 5.0: ");
-        OLED.print(g_pm5p0_ppd_value);
-        OLED.setCursor(64, 24);
-        OLED.print("10.0: ");
-        OLED.println(g_pm10p0_ppd_value);
-      } else {
-        OLED.println("Particles / Deciliter");
-        OLED.println("---------------------");
-        OLED.println(" Preparing sensor and");
-        OLED.println("   waiting for data");
-      }
-      break;
+      OLED.print(" 5.0: ");
+      OLED.print(g_pm5p0_ppd_value);
+      OLED.setCursor(64, 24);
+      OLED.print("10.0: ");
+      OLED.println(g_pm10p0_ppd_value);
+    }
+    else
+    {
+      OLED.println("Particles / Deciliter");
+      OLED.println("---------------------");
+      OLED.println(" Preparing sensor and");
+      OLED.println("   waiting for data");
+    }
+    break;
 
-    case DISPLAY_STATE_INFO:
-      OLED.print("IP:   ");
-      OLED.println(WiFi.localIP());
-      char mqtt_client_id[20];
-      sprintf(mqtt_client_id, "esp8266-%x", g_device_id);
-      OLED.setTextWrap(false);
-      OLED.print("ID:   ");
-      OLED.println(mqtt_client_id);
-      OLED.print("SSID: ");
-      OLED.println(ssid);
-      OLED.print("WiFi: ");
-      if (WiFi.status() == WL_CONNECTED)
-      {
-        OLED.print("OK");
-      } else {
-        OLED.print("FAILED");
-      }
-      OLED.print("   Up:");
-      OLED.print((int)millis() / 1000);
-      break;
+  case DISPLAY_STATE_INFO:
+    OLED.print("IP:   ");
+    OLED.println(WiFi.localIP());
+    char mqtt_client_id[20];
+    sprintf(mqtt_client_id, "esp8266-%x", g_device_id);
+    OLED.setTextWrap(false);
+    OLED.print("ID:   ");
+    OLED.println(mqtt_client_id);
+    OLED.print("SSID: ");
+    OLED.println(ssid);
+    OLED.print("WiFi: ");
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      OLED.print("OK");
+    }
+    else
+    {
+      OLED.print("FAILED");
+    }
+    OLED.print("   Up:");
+    OLED.print((int)millis() / 1000);
+    break;
 
-    /* This fallback helps with debugging if you call a state that isn't defined */
-    default:
-      OLED.println("Unknown state:");
-      OLED.println(g_display_state);
-      break;
+  /* This fallback helps with debugging if you call a state that isn't defined */
+  default:
+    OLED.println("Unknown state:");
+    OLED.println(g_display_state);
+    break;
   }
 
   OLED.display();
@@ -453,7 +642,8 @@ void reportToMqtt()
   String message_string;
 
 #if REPORT_MQTT_SEPARATE
-  if (true == g_pms_ae_readings_taken)
+
+  if (pmstimer.readingsWaiting())
   {
     /* Report PM1.0 AE value */
     message_string = String(g_pm1p0_ae_value);
@@ -469,10 +659,7 @@ void reportToMqtt()
     message_string = String(g_pm10p0_ae_value);
     message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
     client.publish(g_pm10p0_ae_mqtt_topic, g_mqtt_message_buffer);
-  }
 
-  if (true == g_pms_ppd_readings_taken)
-  {
     /* Report PM0.3 PPD value */
     message_string = String(g_pm0p3_ppd_value);
     message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
@@ -503,6 +690,25 @@ void reportToMqtt()
     message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
     client.publish(g_pm10p0_ppd_mqtt_topic, g_mqtt_message_buffer);
   }
+
+  if (bmetimer.readingsWaiting())
+  {
+    message_string = String(g_humidity_percent_value);
+    message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
+    client.publish(g_humidity_percent_mqtt_topic, g_mqtt_message_buffer);
+
+    message_string = String(g_pressure_hpa_value);
+    message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
+    client.publish(g_pressure_hpa_mqtt_topic, g_mqtt_message_buffer);
+
+    message_string = String(g_temperature_celsius_value);
+    message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
+    client.publish(g_temperature_celsius_mqtt_topic, g_mqtt_message_buffer);
+
+    message_string = String(g_altitude_meter_value);
+    message_string.toCharArray(g_mqtt_message_buffer, message_string.length() + 1);
+    client.publish(g_altitude_meter_mqtt_topic, g_mqtt_message_buffer);
+  }
 #endif
 
 #if REPORT_MQTT_JSON
@@ -519,16 +725,20 @@ void reportToMqtt()
   // message below only works because the message buffer size has been increased to 255 bytes
   // in setup.
 
+  // BME/BMP280 not yet implemented here!
+
   // Format the message as JSON in the outgoing message buffer:
-  if (true == g_pms_ppd_readings_taken)
+  if (pmstimer.readingsWaiting())
   {
-    sprintf(g_mqtt_message_buffer,  "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i,\"PB0.3\":%i,\"PB0.5\":%i,\"PB1\":%i,\"PB2.5\":%i,\"PB5\":%i,\"PB10\":%i}}",
+    sprintf(g_mqtt_message_buffer, "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i,\"PB0.3\":%i,\"PB0.5\":%i,\"PB1\":%i,\"PB2.5\":%i,\"PB5\":%i,\"PB10\":%i}}",
             g_pm1p0_sp_value, g_pm2p5_sp_value, g_pm10p0_sp_value,
             g_pm1p0_ae_value, g_pm2p5_ae_value, g_pm10p0_ae_value,
             g_pm0p3_ppd_value, g_pm0p3_ppd_value, g_pm1p0_ppd_value,
             g_pm2p5_ppd_value, g_pm5p0_ppd_value, g_pm10p0_ppd_value);
-  } else {
-    sprintf(g_mqtt_message_buffer,  "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i}}",
+  }
+  else
+  {
+    sprintf(g_mqtt_message_buffer, "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i}}",
             g_pm1p0_sp_value, g_pm2p5_sp_value, g_pm10p0_sp_value,
             g_pm1p0_ae_value, g_pm2p5_ae_value, g_pm10p0_ae_value);
   }
@@ -542,7 +752,7 @@ void reportToMqtt()
 */
 void reportToSerial()
 {
-  if (true == g_pms_ppd_readings_taken)
+  if (pmstimer.readingsWaiting())
   {
     /* Report PM1.0 AE value */
     Serial.print("PM1:");
@@ -557,7 +767,7 @@ void reportToSerial()
     Serial.println(String(g_pm10p0_ae_value));
   }
 
-  if (true == g_pms_ppd_readings_taken)
+  if (pmstimer.readingsWaiting())
   {
     /* Report PM0.3 PPD value */
     Serial.print("PB0.3:");
@@ -582,6 +792,29 @@ void reportToSerial()
     /* Report PM10.0 PPD value */
     Serial.print("PB10:");
     Serial.println(String(g_pm10p0_ppd_value));
+  }
+
+  if (bmetimer.readingsWaiting())
+  {
+    // Temperature
+    Serial.print("Temperature = ");
+    Serial.print(g_temperature_celsius_value);
+    Serial.println(" *C");
+
+    // Pressure
+    Serial.print("Pressure = ");
+    Serial.print(g_pressure_hpa_value);
+    Serial.println(" hPa");
+
+    // Sealevel (approximation)
+    Serial.print("Approx. Altitude = ");
+    Serial.print(g_altitude_meter_value);
+    Serial.println(" m");
+
+    // Humidity
+    Serial.print("Humidity = ");
+    Serial.print(g_humidity_percent_value);
+    Serial.println(" %");
   }
 }
 
@@ -617,7 +850,9 @@ bool initWifi()
   if (WiFi.status() != WL_CONNECTED)
   {
     return false;
-  } else {
+  }
+  else
+  {
     return true;
   }
 }
@@ -625,7 +860,8 @@ bool initWifi()
 /**
   Reconnect to MQTT broker, and publish a notification to the status topic
 */
-void reconnectMqtt() {
+void reconnectMqtt()
+{
   char mqtt_client_id[20];
   sprintf(mqtt_client_id, "esp8266-%x", ESP.getChipId());
 
@@ -642,7 +878,9 @@ void reconnectMqtt() {
       client.publish(status_topic, g_mqtt_message_buffer);
       // Resubscribe
       //client.subscribe(g_command_topic);
-    } else {
+    }
+    else
+    {
       //Serial.print("failed, rc=");
       //Serial.print(client.state());
       //Serial.println(" try again in 5 seconds");
@@ -657,7 +895,7 @@ void reconnectMqtt() {
   right now for this project because we don't receive commands via MQTT. You
   can modify this function to make the device act on commands that you send it.
 */
-void mqttCallback(char* topic, byte* payload, uint8_t length)
+void mqttCallback(char *topic, byte *payload, uint8_t length)
 {
   /*
     Serial.print("Message arrived [");

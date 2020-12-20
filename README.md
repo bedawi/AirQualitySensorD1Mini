@@ -1,6 +1,10 @@
 Air Quality Sensor firmware for D1 Mini
 ========================================
 
+This fork supports more than one sensor. In addition to the PMS5003 the 
+BME/BMP280 sensor has been added to measure temperatur, humidity and pressure.
+
+
 Read from a Plantower PMS5003 particulate matter sensor using a Wemos D1
 Mini (or other ESP8266-based board) and report the values to an MQTT
 broker and show them on a 128x32 OLED display.
