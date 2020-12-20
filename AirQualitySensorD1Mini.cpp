@@ -368,6 +368,9 @@ void setup()
   Serial.println(g_mqtt_json_topic); // From PMS
 #endif
 
+  // Disable WiFi-AccessPoint
+  WiFi.softAPdisconnect(true);
+
   // Connect to WiFi
   Serial.println("Connecting to WiFi");
   if (initWifi())
