@@ -60,7 +60,7 @@ For particulate matter sensor:
  * PMS5003 pin 5 (TX) to D1 Mini "D6" pin (Different from original project!)
 
 For mode button:
- * Button connected between D1 Mini "D7" pin (GPIO13) and GND
+ * Button connected between D1 Mini "D3" pin (GPIO13) and GND (Different from original project!)
 
 The OLED and the BME/BMP280 sensor via I2C
  * OLED VCC to D1 Mini 3.3V
