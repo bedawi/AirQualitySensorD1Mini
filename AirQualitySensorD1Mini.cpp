@@ -724,14 +724,15 @@ void reportToMqtt()
   // Format the message as JSON in the outgoing message buffer:
   if (pmstimer.readingsWaiting())
   {
-    sprintf(g_mqtt_message_buffer, "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i,\"PB0.3\":%i,\"PB0.5\":%i,\"PB1\":%i,\"PB2.5\":%i,\"PB5\":%i,\"PB10\":%i,\"temperature\":%f,\"humidity\":%f,\"pressure\":%f,\"altitude\":%f}}",
+    sprintf(g_mqtt_message_buffer, "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i,\"PB0.3\":%i,\"PB0.5\":%i,\"PB1\":%i,\"PB2.5\":%i,\"PB5\":%i,\"PB10\":%i}, \"BMEBMP280\":{\"temperature\":%f,\"humidity\":%f,\"pressure\":%f,\"altitude\":%f}}",
             g_pm1p0_sp_value, g_pm2p5_sp_value, g_pm10p0_sp_value,
             g_pm1p0_ae_value, g_pm2p5_ae_value, g_pm10p0_ae_value,
             g_pm0p3_ppd_value, g_pm0p3_ppd_value, g_pm1p0_ppd_value,
             g_pm2p5_ppd_value, g_pm5p0_ppd_value, g_pm10p0_ppd_value,
             g_temperature_celsius_value, g_humidity_percent_value, g_pressure_hpa_value,
             g_altitude_meter_value);
-  } /*
+  }
+  /*
   else
   {
     sprintf(g_mqtt_message_buffer, "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i}}",
