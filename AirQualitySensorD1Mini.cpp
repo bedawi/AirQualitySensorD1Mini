@@ -52,7 +52,7 @@
 //#include "Adafruit_CCS811.h"  // Alcohol, aldehydes, ketones, organic acids, amines, aliphatic and aromatic hydrocarbons
 
 /*--------------------------- Classes ------------------------------------*/
-// This class provides timer functions for sensors. 
+// This class provides timer functions for sensors.
 class SensorTimer
 {
   int repeat_time;
@@ -159,9 +159,9 @@ uint32_t g_pm10p0_ppd_value = 0; // Particles Per Deciliter pm10.0 reading
 
 // BME/BMP280 sensor
 float_t g_temperature_celsius_value = 0; // Temperature reading
-float_t g_humidity_percent_value = 0; // Humidity reading
-float_t g_pressure_hpa_value = 0; // Air pressure reading
-float_t g_altitude_meter_value = 0; // Altimeter reading
+float_t g_humidity_percent_value = 0;    // Humidity reading
+float_t g_pressure_hpa_value = 0;        // Air pressure reading
+float_t g_altitude_meter_value = 0;      // Altimeter reading
 
 // MQTT
 char g_mqtt_message_buffer[255]; // General purpose buffer for MQTT messages
@@ -307,7 +307,7 @@ void setup()
   } */
 
   // Set up display
-  OLED.begin();
+  if (!OLED.begin()) { Serial.println("Display error"); }
   OLED.clearDisplay();
   OLED.setTextWrap(false);
   OLED.setTextSize(1);
@@ -548,26 +548,17 @@ void renderScreen()
   case DISPLAY_STATE_GRAMS:
     OLED.setTextWrap(false);
 
-    if (pmstimer.readingsWaiting())
-    {
-      OLED.println("  Particles ug/m^3");
+    OLED.println("  Particles ug/m^3");
 
-      OLED.print("     PM  1.0: ");
-      OLED.println(g_pm1p0_ae_value);
+    OLED.print("     PM  1.0: ");
+    OLED.println(g_pm1p0_ae_value);
 
-      OLED.print("     PM  2.5: ");
-      OLED.println(g_pm2p5_ae_value);
+    OLED.print("     PM  2.5: ");
+    OLED.println(g_pm2p5_ae_value);
 
-      OLED.print("     PM 10.0: ");
-      OLED.println(g_pm10p0_ae_value);
-    }
-    else
-    {
-      OLED.println("  Particles ug/m^3");
-      OLED.println("  ----------------");
-      OLED.println(" Preparing sensor and");
-      OLED.println("   waiting for data");
-    }
+    OLED.print("     PM 10.0: ");
+    OLED.println(g_pm10p0_ae_value);
+
     break;
 
   case DISPLAY_STATE_PPD:
@@ -728,23 +719,25 @@ void reportToMqtt()
   // message below only works because the message buffer size has been increased to 255 bytes
   // in setup.
 
-  // BME/BMP280 not yet implemented here!
+  // BME/BMP280 values are sent with the PMS-Values. Here is room for improvement.
 
   // Format the message as JSON in the outgoing message buffer:
   if (pmstimer.readingsWaiting())
   {
-    sprintf(g_mqtt_message_buffer, "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i,\"PB0.3\":%i,\"PB0.5\":%i,\"PB1\":%i,\"PB2.5\":%i,\"PB5\":%i,\"PB10\":%i}}",
+    sprintf(g_mqtt_message_buffer, "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i,\"PB0.3\":%i,\"PB0.5\":%i,\"PB1\":%i,\"PB2.5\":%i,\"PB5\":%i,\"PB10\":%i,\"temperature\":%f,\"humidity\":%f,\"pressure\":%f,\"altitude\":%f}}",
             g_pm1p0_sp_value, g_pm2p5_sp_value, g_pm10p0_sp_value,
             g_pm1p0_ae_value, g_pm2p5_ae_value, g_pm10p0_ae_value,
             g_pm0p3_ppd_value, g_pm0p3_ppd_value, g_pm1p0_ppd_value,
-            g_pm2p5_ppd_value, g_pm5p0_ppd_value, g_pm10p0_ppd_value);
-  }
+            g_pm2p5_ppd_value, g_pm5p0_ppd_value, g_pm10p0_ppd_value,
+            g_temperature_celsius_value, g_humidity_percent_value, g_pressure_hpa_value,
+            g_altitude_meter_value);
+  } /*
   else
   {
     sprintf(g_mqtt_message_buffer, "{\"PMS5003\":{\"CF1\":%i,\"CF1\":%i,\"CF1\":%i,\"PM1\":%i,\"PM2.5\":%i,\"PM10\":%i}}",
             g_pm1p0_sp_value, g_pm2p5_sp_value, g_pm10p0_sp_value,
             g_pm1p0_ae_value, g_pm2p5_ae_value, g_pm10p0_ae_value);
-  }
+  } */
 
   client.publish(g_mqtt_json_topic, g_mqtt_message_buffer);
 #endif
