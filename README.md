@@ -28,6 +28,12 @@ structure used by Tasmota, at a topic similar to:
 
  * tele/d9616f/SENSOR
 
+Example output:
+
+```
+{"PMS5003":{"CF1":0,"CF1":0,"CF1":0,"PM1":0,"PM2.5":0,"PM10":0,"PB0.3":27,"PB0.5":27,"PB1":2,"PB2.5":0,"PB5":0,"PB10":0}, "BMEBMP280":{"temperature":23.629999,"humidity":57.223633,"pressure":1002.591309,"altitude":89.121361}}
+```
+
 If you install the OLED and the mode button, you can use the button to toggle the display between different screens. The first screen shows the most recent readings in micrograms per cubic meter. The second screen shows the most recent readings in particles per deciliter. The third screen shows network information including the MQTT ID, IP address, WiFi SSID, WiFi connection status, and uptime.
 
 ## Dependencies
